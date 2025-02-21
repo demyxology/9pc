@@ -77,6 +77,12 @@ struct Version {
   char version[8]; /* usually "9P2000" */
 };
 
+typedef struct Error Error;
+struct Error {
+  uint16_t elen; /* error string length */
+  char *ename;   /* error message */
+};
+
 typedef struct Attach Attach;
 struct Attach {
   Header hdr;
