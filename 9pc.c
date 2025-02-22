@@ -22,17 +22,232 @@
 static inline int rsize(SOCKET fd);
 
 int
+sstat(SOCKET fd, uint32_t fid)
+{
+  uint32_t total_size = 7 + 4;
+  unsigned char msg[total_size];
+  int offset;
+  Header hdr = { total_size, Tstat, 0 };
+  int nbytes;
+
+  offset = 0;
+  packheader(msg, &hdr, &offset);
+  pack32(msg, fid, &offset);
+
+  nbytes = send(fd, (char *)msg, total_size, 0);
+  return nbytes;
+}
+
+int
+rstat(SOCKET fd, Stat *stat, Error *err)
+{
+  uint32_t size, nbytes;
+  unsigned char msg[8192];
+  int offset;
+  Header hdr;
+
+  size = rsize(fd);
+  if(size == 0) {
+    perror("rstat size");
+    return -1;
+  }
+  else if(size > sizeof msg) {
+    fprintf(stderr, "message too large: %u", size);
+    return -1;
+  }
+
+  nbytes = recv(fd, (char *)msg + 4, size - 4, 0);
+  if(nbytes != size - 4) {
+    perror("incomplete message received");
+    return -1;
+  }
+
+  offset = 0;
+  unpackheader(msg, &hdr, &offset);
+
+  if(hdr.type == Rerror) {
+    unpackstr(msg, err->elen, err->ename, 256, &offset);
+    return 0;
+  }
+
+  if(hdr.type != Rstat) {
+    fprintf(stderr, "unexpected message type: %u", msg[4]);
+    return -1;
+  }
+
+  unpack16(msg, &stat->size, &offset);
+  unpack16(msg, &stat->type, &offset);
+  unpack32(msg, &stat->dev, &offset);
+  unpackqid(msg, &stat->qid, &offset);
+  unpack32(msg, &stat->mode, &offset);
+  unpack32(msg, &stat->atime, &offset);
+  unpack32(msg, &stat->mtime, &offset);
+  unpack64(msg, &stat->length, &offset);
+  unpack16(msg, &stat->name, &offset);
+  unpackstr(msg, stat->name, &offset);
+  unpack16(msg, &stat->uid, &offset);
+  unpackstr(msg, stat->uid, &offset);
+
+  return 0;
+}
+
+int
+sflush(SOCKET fd, uint16_t oldtag)
+{
+  uint32_t total_size = 7 + 2; /* header + tag */
+  unsigned char msg[total_size];
+  int offset;
+  Header hdr = { total_size, Tflush, 0 };
+  int nbytes;
+
+  offset = 0;
+  packheader(msg, &hdr, &offset);
+  pack16(msg, oldtag, &offset);
+
+  nbytes = send(fd, (char *)msg, total_size, 0);
+  return nbytes;
+}
+
+int
+rflush(SOCKET fd)
+{
+  uint32_t size, nbytes;
+  unsigned char msg[8192];
+  Header hdr;
+  int offset;
+
+  size = rsize(fd);
+  if(size == 0) {
+    perror("rflush size");
+    return -1;
+  }
+  else if(size > sizeof msg) {
+    fprintf(stderr, "message too large: %u", size);
+    return -1;
+  }
+
+  nbytes = recv(fd, (char *)msg + 4, size - 4, 0);
+  if(nbytes != size - 4) {
+    perror("incomplete message received");
+    return -1;
+  }
+
+  offset = 0;
+  unpackheader(msg, &hdr, &offset);
+
+  if(hdr.type != Rflush) {
+    fprintf(stderr, "unexpected message type: %u", msg[4]);
+    return -1;
+  }
+
+  return 0;
+}
+
+int
+swalk(SOCKET fd, uint32_t fid, uint32_t newfid, uint16_t nwname, char **wname)
+{
+  Header hdr;
+  unsigned char *msg;
+  int offset, nbytes;
+
+  hdr.size = 4 + 1 + 2 + 4 + 4 + 2; /* not full size yet */
+  hdr.tag = 0;
+  hdr.type = Twalk;
+
+  for(int i = 0; i < nwname; i++) {
+    hdr.size += 2 + strlen(wname[i]); /* str length header + strlen */
+  }
+
+  msg = malloc(hdr.size);
+  if (msg == NULL) {
+    perror("swalk malloc");
+    return -1;
+  }
+
+  offset = 0;
+  packheader(msg, &hdr, &offset);
+  pack32(msg, fid, &offset);
+  pack32(msg, newfid, &offset);
+  pack16(msg, nwname, &offset);
+
+  for(int i = 0; i < nwname; i++) {
+    packstr(msg, wname[i], &offset);
+  }
+
+  nbytes = send(fd, (char *)msg, hdr.size, 0);
+
+  free(msg);
+
+  return nbytes;
+}
+
+int
+rwalk(SOCKET fd, Qid *qids, Error *err)
+{
+  uint16_t nwquid;
+  uint32_t size, nbytes;
+  unsigned char msg[8192];
+  int offset;
+  Header hdr;
+
+  size = rsize(fd);
+  if (size == 0) {
+    perror("rwalk size");
+    return -1;
+  }
+  else if(size > sizeof msg) {
+    fprintf(stderr, "message too large: %u", size);
+    return -1;
+  }
+
+  nbytes = recv(fd, (char *)msg + 4, size - 4, 0);
+  if(nbytes != size - 4) {
+    perror("incomplete message received");
+    return -1;
+  }
+
+  offset = 0;
+  unpackheader(msg, &hdr, &offset);
+
+  /* check message type */
+  if(hdr.type == Rerror) {
+    unpackstr(msg, err->elen, err->ename, 256, &offset);
+    return 0;
+  }
+
+  if(hdr.type != Rwalk) {
+    fprintf(stderr, "unexpected message type: %u", msg[4]);
+    return -1;
+  }
+
+  unpack16(msg, &nwquid, &offset);
+  if(nwquid > MAXWELEM) {
+    fprintf(stderr, "too many qids: %u", nwquid);
+    return -1;
+  }
+
+  for(int i = 0; i < nwquid; i++) {
+    unpackqid(msg, qids + i, &offset);
+  }
+
+  return nwquid;
+}
+
+int
 sclunk(SOCKET fd, uint32_t fid)
 {
   uint32_t total_size = 7 + 4;
   unsigned char msg[total_size];
   int offset;
   Header hdr = { total_size, Tclunk, 0 };
+  int nbytes;
 
-  offset = packheader(&hdr, msg);
+  offset = 0;
+  packheader(msg, &hdr, &offset);
   pack32(msg, fid, &offset);
 
-  return send(fd, (char *)msg, total_size, 0);
+  nbytes = send(fd, (char *)msg, total_size, 0);
+  return nbytes;
 }
 
 int
@@ -40,6 +255,8 @@ rclunk(SOCKET fd, Error *err)
 {
   uint32_t size, nbytes;
   unsigned char msg[8192];
+  Header hdr;
+  int offset;
 
   size = rsize(fd);
   if (size == 0) {
@@ -57,24 +274,15 @@ rclunk(SOCKET fd, Error *err)
     return -1;
   }
 
-  if(msg[4] == Rerror) {
-    err->elen = *(uint16_t *)(msg + 7);
-    if(err->elen > size - 9) {
-      fprintf(stderr, "invalid error message size");
-      return -1;
-    }
+  offset = 0;
+  unpackheader(msg, &hdr, &offset);
 
-    err->ename = malloc(err->elen + 1);
-    if(err->ename == NULL) {
-      perror("rclunk malloc");
-      return -1;
-    }
-    memcpy(err->ename, msg + 9, err->elen);
-    err->ename[err->elen] = 0;
+  if(hdr.type == Rerror) {
+    unpackstr(msg, err->elen, err->ename, 256, &offset);
     return 0;
   }
 
-  if(msg[4] != Rclunk) {
+  if(hdr.type != Rclunk) {
     fprintf(stderr, "unexpected message type: %u", msg[4]);
     return -1;
   }
@@ -88,15 +296,13 @@ sattach(SOCKET fd, Attach *a)
   unsigned char *msg;
   int offset, nbytes;
 
-  printf("Sending attach: size=%u, type=%u, tag=%u, fid=%u, afid=%u, uname=%s, "
-         "aname=%s\n",
-         a->hdr.size, a->hdr.type, a->hdr.tag, a->fid, a->afid, a->uname, a->aname);
   if((msg = malloc(a->hdr.size)) == NULL) {
     perror("sattach malloc");
     return -1;
   }
 
-  offset = packheader(&a->hdr, msg);
+  offset = 0;
+  packheader(msg, &a->hdr, &offset);
   pack32(msg, a->fid, &offset);
   pack32(msg, a->afid, &offset);
   packstr(msg, a->uname, &offset);
@@ -114,8 +320,8 @@ rattach(SOCKET fd, Qid *qid, Error *err)
   uint32_t size, nbytes;
   unsigned char msg[8192];
   int offset;
+  Header hdr;
 
-  puts("rsize");
   size = rsize(fd);
   if (size == 0) {
     perror("rattach size");
@@ -127,43 +333,34 @@ rattach(SOCKET fd, Qid *qid, Error *err)
   }
 
   /* get rest of message */
-  puts("rest");
   nbytes = recv(fd, (char *)msg + 4, size - 4, 0);
   if(nbytes != size - 4) {
     perror("incomplete message received");
     return -1;
   }
 
-  /* check message type */
-  if(msg[4] == Rerror) {
-    err->elen = *(uint16_t *)(msg + 7);
-    if(err->elen > size - 9) {
-      fprintf(stderr, "invalid error message size");
-      return -1;
-    }
+  offset = 0;
+  unpackheader(msg, &hdr, &offset);
 
-    err->ename = malloc(err->elen + 1);
-    if(err->ename == NULL) {
-      perror("rattach malloc");
-      return -1;
-    }
-    memcpy(err->ename, msg + 9, err->elen);
-    err->ename[err->elen] = 0;
+  /* check message type */
+  if(hdr.type == Rerror) {
+    unpackstr(msg, err->elen, err->ename, 256, &offset);
     return 0;
   }
 
-  if(msg[4] != Rattach) {
+  if(hdr.type != Rattach) {
     fprintf(stderr, "unexpected message type: %u", msg[4]);
     return -1;
   }
 
   /* unpack qid */
-  offset = 7;
   qid->type = msg[offset];
   offset++;
   qid->vers = *(uint32_t *)(msg + offset);
   offset += 4;
   qid->path = *(uint64_t *)(msg + offset);
+
+  printf("size: %u nbytes: %u\n", size, nbytes);
 
   return 0;
 }
@@ -179,7 +376,8 @@ sver(SOCKET fd)
   Header hdr = { total_size, Tversion, 0 };
 
   /* little endian */
-  offset = packheader(&hdr, msg);
+  offset = 0;
+  packheader(msg, &hdr, &offset);
   pack32(msg, msize, &offset);
   packstr(msg, "9P2000", &offset);
 
@@ -191,9 +389,7 @@ rsize(SOCKET fd)
 {
   uint32_t nbytes;
   char msg[16];
-  printf("reading size\n");
   nbytes = recv(fd, (char *)msg, 4, 0);
-  printf("read %d bytes\n", nbytes);
   if (nbytes != 4) {
     return 0;
   }
@@ -204,7 +400,8 @@ rsize(SOCKET fd)
 int rver(SOCKET fd, Version *ver)
 {
   uint32_t size, nbytes;
-  unsigned char msg[8192];
+  unsigned char msg[128];
+  int offset;
 
   size = rsize(fd);
   if (size == 0) {
@@ -224,13 +421,13 @@ int rver(SOCKET fd, Version *ver)
   }
 
   /* unpack */
-  ver->hdr.size = size;
-  ver->hdr.type = msg[4];
-  ver->hdr.tag = *(uint16_t *)(msg + 5);
-  ver->msize = *(uint32_t *)(msg + 7);
-  ver->vlen = *(uint16_t *)(msg + 11);
-  memcpy(ver->version, msg + 13, ver->vlen);
-  ver->version[ver->vlen] = 0;
+  offset = 0;
+  unpackheader(msg, &ver->hdr, &offset);
+  unpack32(msg, &ver->msize, &offset);
+  if(unpackstr(msg, ver->vlen, ver->version, 8, &offset)< 0) {
+    perror("rver unpackstr");
+    return -1;
+  }
 
   return 0;
 }
@@ -248,6 +445,12 @@ main(int argc, char *argv[])
 	Attach att;
   Qid qid;
   Error err;
+  char errstr[256];
+  Qid qids[MAXWELEM * QIDSZ];
+  int nwqid;
+  char *wname[MAXWELEM];
+  uint16_t nwname;
+  Stat stat;
 
 #ifdef _WIN32
 	WSADATA wsa;
@@ -326,19 +529,38 @@ main(int argc, char *argv[])
   att.aname = "";
 
   err.elen = 0;
-  err.ename = NULL;
+  err.ename = errstr;
 
   if((r = sattach(fd, &att)) < 0) goto Exit;
   if((r = rattach(fd, &qid, &err)) < 0) goto Exit;
 
-  if(err.ename != NULL) {
+  if(err.elen != 0) {
     fprintf(stderr, "Rerror: %s\n", err.ename);
     r = -1;
     goto Exit;
   }
-  printf("QID[ %u, %u, %llu ]", qid.type, qid.vers, qid.path);
+  printf("QID[ %u, %u, %llu ]\n", qid.type, qid.vers, qid.path);
 
-  if((r = sclunk(fd, att.fid)) < 0) goto Exit;
+  nwname = 2;
+  wname[0] = "sys";
+  wname[1] = "src";
+  if((r = swalk(fd, att.fid, 1, nwname, wname)) < 0) goto Exit;
+  if((nwqid = rwalk(fd, qids, &err)) < 0) goto Exit;
+  if(err.elen != 0) {
+    fprintf(stderr, "Rerror: %s\n", err.ename);
+    r = -1;
+    goto Exit;
+  }
+
+  puts("got qids:");
+  for(int i = 0; i < nwqid; i++) {
+    printf("QID[ %u, %u, %llu ]\n", qids[i].type, qids[i].vers, qids[i].path);
+  }
+
+  if((r = sstat(fd, 1)) < 0) goto Exit;
+  if((r = rstat(fd, &stat, &err)) < 0) goto Exit;
+
+  if((r = sclunk(fd, 0)) < 0) goto Exit;
   if((r = rclunk(fd, &err)) < 0) goto Exit;
   else printf("Received Rclunk\n");
 

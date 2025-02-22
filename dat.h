@@ -51,6 +51,10 @@ enum {
 	MAXFDATA = 8192,	/* max data payload */
 	MAXWELEM = 16,		/* max elements in walk */
 	MAXMSG = (IOHDRSZ + MAXFDATA), /* max message size */
+
+  /* struct sizes */
+  QIDSZ = 13,
+  HDRSZ = 7,
 };
 
 typedef struct Qid Qid;
@@ -92,4 +96,26 @@ struct Attach {
   char *uname;
   uint16_t alen;
   char *aname;
+};
+
+typedef struct Stat Stat;
+struct Stat {
+  uint16_t size;
+  uint16_t type;
+  uint32_t dev;
+  Qid qid;
+  uint32_t mode;
+  uint32_t atime;
+  uint32_t mtime;
+  uint64_t length;
+  uint16_t namelen;
+  char *name;
+  uint16_t namelen;
+  char *name;
+  uint16_t uidlen;
+  char *uid;
+  uint16_t gidlen;
+  char *gid;
+  uint16_t muidlen;
+  char *muid;
 };
