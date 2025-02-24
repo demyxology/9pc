@@ -53,8 +53,6 @@ enum {
 	MAXMSG = (IOHDRSZ + MAXFDATA), /* max message size */
 
   /* struct sizes */
-  QIDSZ = 13,
-  HDRSZ = 7,
 };
 
 typedef struct Qid Qid;
@@ -109,13 +107,17 @@ struct Stat {
   uint32_t mtime;
   uint64_t length;
   uint16_t namelen;
-  char *name;
-  uint16_t namelen;
-  char *name;
+  char name[256];
   uint16_t uidlen;
-  char *uid;
+  char uid[16];
   uint16_t gidlen;
-  char *gid;
+  char gid[16];
   uint16_t muidlen;
-  char *muid;
+  char muid[16];
+};
+
+enum {
+  QIDSZ = 13,
+  HDRSZ = 7,
+  MAXSTATSZ = 2 + 2 + 4 + QIDSZ + 4 + 4 + 4 + 8 + 2 + 256 + 2 + 16 + 2 + 16 + 2 + 16,
 };

@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include <string.h>
+#include <assert.h>
 
 #ifdef _WIN32
 #include <winsock2.h>
@@ -20,6 +21,236 @@
 #include "fns.h"
 
 static inline int rsize(SOCKET fd);
+
+void printstat(Stat stat)
+{
+  printf("  size: %u\n", stat.size);
+  printf("  type: %u\n", stat.type);
+  printf("  dev: %u\n", stat.dev);
+  printf("  qid: { type: %u, vers: %u, path: %llu }\n", stat.qid.type,
+         stat.qid.vers, stat.qid.path);
+  printf("  mode: %#o\n", stat.mode);
+  printf("  atime: %u\n", stat.atime);
+  printf("  mtime: %u\n", stat.mtime);
+  printf("  length: %llu\n", stat.length);
+  printf("  name: (%u) %.*s\n", stat.namelen, stat.namelen, stat.name);
+  printf("  uid: (%u) %.*s\n", stat.uidlen, stat.uidlen, stat.uid);
+  printf("  gid: (%u) %.*s\n", stat.gidlen, stat.gidlen, stat.gid);
+  printf("  muid: (%u) %.*s\n", stat.muidlen, stat.muidlen, stat.muid);
+}
+
+int
+readdir(unsigned char *data, uint32_t count, Stat *stats)
+{
+  uint16_t size;
+  int offset, nstat;
+
+  nstat = 0;
+  offset = 0;
+
+  while(offset < count) {
+    unpack16(data, &size, &offset);
+    unpackstat(data + offset, stats + nstat, &offset);
+    nstat++;
+  }
+
+  return nstat;
+}
+
+int
+sread(SOCKET fd, uint32_t fid, uint64_t foffset, uint32_t count)
+{
+  uint32_t total_size = 7 + 4 + 8 + 4;
+  unsigned char msg[total_size];
+  int offset;
+  Header hdr = { total_size, Tread, 0 };
+  int nbytes;
+
+  offset = 0;
+  packheader(msg, &hdr, &offset);
+  pack32(msg, fid, &offset);
+  pack64(msg, foffset, &offset);
+  pack32(msg, count, &offset);
+
+  nbytes = send(fd, (char *)msg, total_size, 0);
+  return nbytes;
+}
+
+int
+rread(SOCKET fd, unsigned char *data, uint32_t *count, Error *err)
+{
+  uint32_t size, nbytes;
+  unsigned char msg[8192];
+  int offset;
+  Header hdr;
+
+  size = rsize(fd);
+  if(size == 0) {
+    perror("rread size");
+    return -1;
+  }
+  else if(size > sizeof msg) {
+    fprintf(stderr, "message too large: %u", size);
+    return -1;
+  }
+
+  nbytes = recv(fd, (char *)msg + 4, size - 4, 0);
+  if(nbytes != size - 4) {
+    perror("incomplete message received");
+    return -1;
+  }
+
+  offset = 0;
+  unpackheader(msg, &hdr, &offset);
+
+  if(hdr.type == Rerror) {
+    unpackstr(msg, &err->elen, err->ename, 256, &offset);
+    return 0;
+  }
+
+  if(hdr.type != Rread) {
+    fprintf(stderr, "unexpected message type: %u", msg[4]);
+    return -1;
+  }
+
+  unpack32(msg, count, &offset);
+  memcpy(data, msg + offset, *count);
+  return 0;
+}
+
+int
+sopen(SOCKET fd, uint32_t fid, uint8_t mode)
+{
+  uint32_t total_size = 7 + 4 + 1;
+  unsigned char msg[total_size];
+  int offset;
+  Header hdr = { total_size, Topen, 0 };
+  int nbytes;
+
+  offset = 0;
+  packheader(msg, &hdr, &offset);
+  pack32(msg, fid, &offset);
+  pack8(msg, mode, &offset);
+
+  nbytes = send(fd, (char *)msg, total_size, 0);
+  return nbytes;
+}
+
+int
+ropen(SOCKET fd, Qid *qid, uint32_t *iounit, Error *err)
+{
+  uint32_t size, nbytes;
+  unsigned char msg[8192];
+  int offset;
+  Header hdr;
+
+  size = rsize(fd);
+  if(size == 0) {
+    perror("ropen size");
+    return -1;
+  }
+  else if(size > sizeof msg) {
+    fprintf(stderr, "message too large: %u", size);
+    return -1;
+  }
+
+  nbytes = recv(fd, (char *)msg + 4, size - 4, 0);
+  if(nbytes != size - 4) {
+    perror("incomplete message received");
+    return -1;
+  }
+
+  offset = 0;
+  unpackheader(msg, &hdr, &offset);
+
+  if(hdr.type == Rerror) {
+    unpackstr(msg, &err->elen, err->ename, 256, &offset);
+    return 0;
+  }
+
+  if(hdr.type != Ropen) {
+    fprintf(stderr, "unexpected message type: %u", msg[4]);
+    return -1;
+  }
+
+  unpackqid(msg, qid, &offset);
+  unpack32(msg, iounit, &offset);
+
+  return 0;
+}
+
+int
+swstat(SOCKET fd, uint32_t fid, Stat *stat)
+{
+  uint32_t total_size = 7 + 2 + 2 + 2 + 4 + 13 + 4 + 4 + 4 + 8 \
+                        + 2 + stat->namelen + 2 + stat->uidlen \
+                        + 2 + stat->gidlen + 2 + stat->muidlen;
+  unsigned char msg[1024];
+  int offset;
+  Header hdr = { total_size, Twstat, 0 };
+  int nbytes;
+
+  assert(total_size <= sizeof msg);
+
+  offset = 0;
+  packheader(msg, &hdr, &offset);
+  pack32(msg, fid, &offset);
+  pack16(msg, stat->size, &offset);
+  pack16(msg, stat->type, &offset);
+  pack32(msg, stat->dev, &offset);
+  packqid(msg, &stat->qid, &offset);
+  pack32(msg, stat->mode, &offset);
+  pack32(msg, stat->atime, &offset);
+  pack32(msg, stat->mtime, &offset);
+  pack64(msg, stat->length, &offset);
+  packstr(msg, stat->name, &offset);
+  packstr(msg, stat->uid, &offset);
+  packstr(msg, stat->gid, &offset);
+  packstr(msg, stat->muid, &offset);
+
+  nbytes = send(fd, (char *)msg, total_size, 0);
+  return nbytes;
+}
+
+int
+rwstat(SOCKET fd, Error *err)
+{
+  uint32_t size, nbytes;
+  unsigned char msg[8192];
+  int offset;
+  Header hdr;
+
+  size = rsize(fd);
+  if(size == 0) {
+    perror("rwstat size");
+    return -1;
+  }
+  else if(size > sizeof msg) {
+    fprintf(stderr, "message too large: %u", size);
+    return -1;
+  }
+
+  nbytes = recv(fd, (char *)msg + 4, size - 4, 0);
+  if(nbytes != size - 4) {
+    perror("incomplete message received");
+    return -1;
+  }
+
+  offset = 0;
+  unpackheader(msg, &hdr, &offset);
+
+  if(hdr.type == Rerror) {
+    unpackstr(msg, &err->elen, err->ename, 256, &offset);
+    return 0;
+  }
+
+  if(hdr.type != Rwstat) {
+    fprintf(stderr, "unexpected message type: %u", msg[4]);
+    return -1;
+  }
+
+  return 0;
+}
 
 int
 sstat(SOCKET fd, uint32_t fid)
@@ -41,6 +272,7 @@ sstat(SOCKET fd, uint32_t fid)
 int
 rstat(SOCKET fd, Stat *stat, Error *err)
 {
+  uint16_t statsz; /* unused */
   uint32_t size, nbytes;
   unsigned char msg[8192];
   int offset;
@@ -66,15 +298,16 @@ rstat(SOCKET fd, Stat *stat, Error *err)
   unpackheader(msg, &hdr, &offset);
 
   if(hdr.type == Rerror) {
-    unpackstr(msg, err->elen, err->ename, 256, &offset);
+    unpackstr(msg, &err->elen, err->ename, 256, &offset);
     return 0;
   }
 
   if(hdr.type != Rstat) {
-    fprintf(stderr, "unexpected message type: %u", msg[4]);
+    fprintf(stderr, "unexpected message type: %u", hdr.type);
     return -1;
   }
 
+  unpack16(msg, &statsz, &offset);
   unpack16(msg, &stat->size, &offset);
   unpack16(msg, &stat->type, &offset);
   unpack32(msg, &stat->dev, &offset);
@@ -83,10 +316,10 @@ rstat(SOCKET fd, Stat *stat, Error *err)
   unpack32(msg, &stat->atime, &offset);
   unpack32(msg, &stat->mtime, &offset);
   unpack64(msg, &stat->length, &offset);
-  unpack16(msg, &stat->name, &offset);
-  unpackstr(msg, stat->name, &offset);
-  unpack16(msg, &stat->uid, &offset);
-  unpackstr(msg, stat->uid, &offset);
+  unpackstr(msg, &stat->namelen, stat->name, sizeof stat->name, &offset);
+  unpackstr(msg, &stat->uidlen, stat->uid, sizeof stat->uid, &offset);
+  unpackstr(msg, &stat->gidlen, stat->gid, sizeof stat->gid, &offset);
+  unpackstr(msg, &stat->muidlen, stat->muid, sizeof stat->muid, &offset);
 
   return 0;
 }
@@ -211,7 +444,7 @@ rwalk(SOCKET fd, Qid *qids, Error *err)
 
   /* check message type */
   if(hdr.type == Rerror) {
-    unpackstr(msg, err->elen, err->ename, 256, &offset);
+    unpackstr(msg, &err->elen, err->ename, 256, &offset);
     return 0;
   }
 
@@ -278,7 +511,7 @@ rclunk(SOCKET fd, Error *err)
   unpackheader(msg, &hdr, &offset);
 
   if(hdr.type == Rerror) {
-    unpackstr(msg, err->elen, err->ename, 256, &offset);
+    unpackstr(msg, &err->elen, err->ename, 256, &offset);
     return 0;
   }
 
@@ -344,7 +577,7 @@ rattach(SOCKET fd, Qid *qid, Error *err)
 
   /* check message type */
   if(hdr.type == Rerror) {
-    unpackstr(msg, err->elen, err->ename, 256, &offset);
+    unpackstr(msg, &err->elen, err->ename, 256, &offset);
     return 0;
   }
 
@@ -424,7 +657,7 @@ int rver(SOCKET fd, Version *ver)
   offset = 0;
   unpackheader(msg, &ver->hdr, &offset);
   unpack32(msg, &ver->msize, &offset);
-  if(unpackstr(msg, ver->vlen, ver->version, 8, &offset)< 0) {
+  if(unpackstr(msg, &ver->vlen, ver->version, 8, &offset)< 0) {
     perror("rver unpackstr");
     return -1;
   }
@@ -451,6 +684,11 @@ main(int argc, char *argv[])
   char *wname[MAXWELEM];
   uint16_t nwname;
   Stat stat;
+  uint32_t iounit;
+  unsigned char data[8192];
+  uint32_t count;
+  Stat stats[MAXSTATSZ * 32];
+  int nstat;
 
 #ifdef _WIN32
 	WSADATA wsa;
@@ -541,9 +779,8 @@ main(int argc, char *argv[])
   }
   printf("QID[ %u, %u, %llu ]\n", qid.type, qid.vers, qid.path);
 
-  nwname = 2;
-  wname[0] = "sys";
-  wname[1] = "src";
+  nwname = 1;
+  wname[0] = "lib";
   if((r = swalk(fd, att.fid, 1, nwname, wname)) < 0) goto Exit;
   if((nwqid = rwalk(fd, qids, &err)) < 0) goto Exit;
   if(err.elen != 0) {
@@ -559,13 +796,53 @@ main(int argc, char *argv[])
 
   if((r = sstat(fd, 1)) < 0) goto Exit;
   if((r = rstat(fd, &stat, &err)) < 0) goto Exit;
+  if(err.elen != 0) {
+    fprintf(stderr, "Rerror: %s\n", err.ename);
+    r = -1;
+    goto Exit;
+  }
+  /* print all fields of stat with a prefix saying what each field is */
+  printf("Stat structure:\n");
 
-  if((r = sclunk(fd, 0)) < 0) goto Exit;
-  if((r = rclunk(fd, &err)) < 0) goto Exit;
-  else printf("Received Rclunk\n");
+  /* cant test swstat yet without auth */
 
+  /* open and read dir contents */
+  iounit = 0;
+  if((r = sopen(fd, 1, OREAD)) < 0) goto Exit;
+  if((r = ropen(fd, &qid, &iounit, &err)) < 0) goto Exit;
 
-  Exit:
+  if(err.elen != 0) {
+    fprintf(stderr, "Rerror: %s\n", err.ename);
+    r = -1;
+    goto Exit;
+  }
+
+  if(iounit == 0) iounit = 8192;
+
+  puts("sending read");
+  if((r = sread(fd, 1, 0, 8192)) < 0) goto Exit;
+  puts("reading");
+  if((r = rread(fd, data, &count, &err)) < 0) goto Exit;
+  if(err.elen != 0) {
+    fprintf(stderr, "Rerror: %s\n", err.ename);
+    r = -1;
+    goto Exit;
+  }
+
+  data[count] = '\0';
+  nstat = readdir(data, count, stats);
+  // printf("READ[ count: %u str: %s ]\n", count, data);
+  for(int i = 0; i < nstat; i++) {
+    printf("Stat %d:\n", i);
+    printstat(stats[i]);
+  }
+
+Exit:
+  r = sflush(fd, 0);
+  r = rflush(fd);
+  r = sclunk(fd, 0);
+  r = rclunk(fd, &err);
+  printf("Received Rclunk\n");
 	closesocket(fd);
 #ifdef _WIN32
 	WSACleanup();

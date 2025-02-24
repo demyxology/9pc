@@ -41,6 +41,12 @@ packstr(unsigned char *buf, char *str, int *offset)
   *offset += len;
 }
 
+void packqid(unsigned char *buf, Qid *qid, int *offset) {
+  pack8(buf, qid->type, offset);
+  pack32(buf, qid->vers, offset);
+  pack64(buf, qid->path, offset);
+}
+
 void
 packheader(unsigned char *buf, Header *hdr, int *offset)
 {
@@ -68,14 +74,14 @@ void unpack64(unsigned char *buf, uint64_t *val, int *offset) {
   *offset += 8;
 }
 
-int unpackstr(unsigned char *buf, uint16_t len, char *dst, uint32_t size, int *offset) {
-  unpack16(buf, &len, offset);
-  if (len > size) {
+int unpackstr(unsigned char *buf, uint16_t *len, char *dst, uint32_t size, int *offset) {
+  unpack16(buf, len, offset);
+  if (*len > size) {
     return -1;
   }
-  memcpy(dst, buf + *offset, len);
-  dst[len] = '\0';
-  *offset += len;
+  memcpy(dst, buf + *offset, *len);
+  dst[*len] = '\0';
+  *offset += *len;
   return 0;
 }
 
@@ -100,4 +106,23 @@ void unpackerr(unsigned char *buf, Error *err, int *offset) {
   memcpy(err->ename, buf + *offset, err->elen);
   err->ename[err->elen] = '\0';
   *offset += err->elen;
+}
+
+void unpackstat(unsigned char *buf, Stat *stat, int *offset) {
+  unpack16(buf, &stat->size, offset);
+  unpack16(buf, &stat->type, offset);
+  unpack32(buf, &stat->dev, offset);
+  unpackqid(buf, &stat->qid, offset);
+  unpack32(buf, &stat->mode, offset);
+  unpack32(buf, &stat->atime, offset);
+  unpack32(buf, &stat->mtime, offset);
+  unpack64(buf, &stat->length, offset);
+  unpack16(buf, &stat->namelen, offset);
+  unpackstr(buf, &stat->namelen, stat->name, sizeof stat->name, offset);
+  unpack16(buf, &stat->uidlen, offset);
+  unpackstr(buf, &stat->uidlen, stat->uid, sizeof stat->uid, offset);
+  unpack16(buf, &stat->gidlen, offset);
+  unpackstr(buf, &stat->gidlen, stat->gid, sizeof stat->gid, offset);
+  unpack16(buf, &stat->muidlen, offset);
+  unpackstr(buf, &stat->muidlen, stat->muid, sizeof stat->muid, offset);
 }
