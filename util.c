@@ -117,12 +117,8 @@ void unpackstat(unsigned char *buf, Stat *stat, int *offset) {
   unpack32(buf, &stat->atime, offset);
   unpack32(buf, &stat->mtime, offset);
   unpack64(buf, &stat->length, offset);
-  unpack16(buf, &stat->namelen, offset);
   unpackstr(buf, &stat->namelen, stat->name, sizeof stat->name, offset);
-  unpack16(buf, &stat->uidlen, offset);
   unpackstr(buf, &stat->uidlen, stat->uid, sizeof stat->uid, offset);
-  unpack16(buf, &stat->gidlen, offset);
   unpackstr(buf, &stat->gidlen, stat->gid, sizeof stat->gid, offset);
-  unpack16(buf, &stat->muidlen, offset);
   unpackstr(buf, &stat->muidlen, stat->muid, sizeof stat->muid, offset);
 }

@@ -1,7 +1,4 @@
 #include <stdio.h>
-#include <stdlib.h>
-#include <stdint.h>
-#include <string.h>
 #include <assert.h>
 
 #ifdef _WIN32
@@ -17,10 +14,9 @@
 #define closesocket close
 #endif
 
-#include "dat.h"
-#include "fns.h"
+#include "9pc.h"
 
-static inline int rsize(SOCKET fd);
+
 
 void printstat(Stat stat)
 {
@@ -42,15 +38,16 @@ void printstat(Stat stat)
 int
 readdir(unsigned char *data, uint32_t count, Stat *stats)
 {
-  uint16_t size;
   int offset, nstat;
+  Stat zerost = {0};
 
   nstat = 0;
   offset = 0;
 
   while(offset < count) {
-    unpack16(data, &size, &offset);
-    unpackstat(data + offset, stats + nstat, &offset);
+    unpackstat(data, stats + nstat, &offset);
+    if(memcmp(&zerost, stats + nstat, sizeof(Stat)) == 0)
+      break;
     nstat++;
   }
 
@@ -60,8 +57,8 @@ readdir(unsigned char *data, uint32_t count, Stat *stats)
 int
 sread(SOCKET fd, uint32_t fid, uint64_t foffset, uint32_t count)
 {
-  uint32_t total_size = 7 + 4 + 8 + 4;
-  unsigned char msg[total_size];
+  const uint32_t total_size = 7 + 4 + 8 + 4;
+  unsigned char msg[7 + 4 + 8 + 4];
   int offset;
   Header hdr = { total_size, Tread, 0 };
   int nbytes;
@@ -80,25 +77,22 @@ int
 rread(SOCKET fd, unsigned char *data, uint32_t *count, Error *err)
 {
   uint32_t size, nbytes;
-  unsigned char msg[8192];
+  unsigned char msg[MAXMSG];
   int offset;
   Header hdr;
 
   size = rsize(fd);
+  printf("size: %u\n", size);
   if(size == 0) {
     perror("rread size");
     return -1;
   }
   else if(size > sizeof msg) {
-    fprintf(stderr, "message too large: %u", size);
+    fprintf(stderr, "rread: message too large: %u\n", size);
     return -1;
   }
 
   nbytes = recv(fd, (char *)msg + 4, size - 4, 0);
-  if(nbytes != size - 4) {
-    perror("incomplete message received");
-    return -1;
-  }
 
   offset = 0;
   unpackheader(msg, &hdr, &offset);
@@ -109,20 +103,73 @@ rread(SOCKET fd, unsigned char *data, uint32_t *count, Error *err)
   }
 
   if(hdr.type != Rread) {
-    fprintf(stderr, "unexpected message type: %u", msg[4]);
+    fprintf(stderr, "unexpected message type: %u\n", msg[4]);
     return -1;
   }
 
   unpack32(msg, count, &offset);
   memcpy(data, msg + offset, *count);
-  return 0;
+  return nbytes;
+}
+
+unsigned char *
+rreadall(SOCKET fd, uint32_t *count, Error *err)
+{
+  uint32_t size, nbytes;
+  unsigned char *msg, *dst;
+  int offset;
+  Header hdr;
+
+  size = rsize(fd);
+  if(size == 0) {
+    perror("rreadall size");
+    return NULL;
+  }
+
+  msg = malloc(size);
+  if(msg == NULL) {
+    perror("rreadall malloc");
+    return NULL;
+  }
+
+  nbytes = recv(fd, (char *)msg + 4, size - 4, 0);
+  if(nbytes != size - 4) {
+    perror("rreadall: incomplete message received");
+    return NULL;
+  }
+
+  offset = 0;
+  unpackheader(msg, &hdr, &offset);
+
+  if(hdr.type == Rerror) {
+    unpackstr(msg, &err->elen, err->ename, 256, &offset);
+    return NULL;
+  }
+
+  if(hdr.type != Rread) {
+    fprintf(stderr, "unexpected message type: %u", msg[4]);
+    return NULL;
+  }
+
+  unpack32(msg, count, &offset);
+
+  dst = malloc(*count + 1);
+  if(dst == NULL) {
+    perror("rreadall malloc");
+    return NULL;
+  }
+  memcpy(dst, msg + offset, *count);
+  dst[*count] = '\0';
+
+  free(msg);
+  return dst;
 }
 
 int
 sopen(SOCKET fd, uint32_t fid, uint8_t mode)
 {
-  uint32_t total_size = 7 + 4 + 1;
-  unsigned char msg[total_size];
+  const uint32_t total_size = 7 + 4 + 1;
+  unsigned char msg[7 + 4 + 1];
   int offset;
   Header hdr = { total_size, Topen, 0 };
   int nbytes;
@@ -156,7 +203,7 @@ ropen(SOCKET fd, Qid *qid, uint32_t *iounit, Error *err)
 
   nbytes = recv(fd, (char *)msg + 4, size - 4, 0);
   if(nbytes != size - 4) {
-    perror("incomplete message received");
+    perror("ropen: incomplete message received");
     return -1;
   }
 
@@ -232,7 +279,7 @@ rwstat(SOCKET fd, Error *err)
 
   nbytes = recv(fd, (char *)msg + 4, size - 4, 0);
   if(nbytes != size - 4) {
-    perror("incomplete message received");
+    perror("rwstat: incomplete message received");
     return -1;
   }
 
@@ -255,8 +302,8 @@ rwstat(SOCKET fd, Error *err)
 int
 sstat(SOCKET fd, uint32_t fid)
 {
-  uint32_t total_size = 7 + 4;
-  unsigned char msg[total_size];
+  const uint32_t total_size = 7 + 4;
+  unsigned char msg[7 + 4];
   int offset;
   Header hdr = { total_size, Tstat, 0 };
   int nbytes;
@@ -284,13 +331,13 @@ rstat(SOCKET fd, Stat *stat, Error *err)
     return -1;
   }
   else if(size > sizeof msg) {
-    fprintf(stderr, "message too large: %u", size);
+    fprintf(stderr, "rstat: message too large: %u", size);
     return -1;
   }
 
   nbytes = recv(fd, (char *)msg + 4, size - 4, 0);
   if(nbytes != size - 4) {
-    perror("incomplete message received");
+    fprintf(stderr, "rstat: incomplete message received. expected %u got %u\n", size, nbytes);
     return -1;
   }
 
@@ -303,7 +350,7 @@ rstat(SOCKET fd, Stat *stat, Error *err)
   }
 
   if(hdr.type != Rstat) {
-    fprintf(stderr, "unexpected message type: %u", hdr.type);
+    fprintf(stderr, "rstat: unexpected message type: %u", hdr.type);
     return -1;
   }
 
@@ -327,8 +374,8 @@ rstat(SOCKET fd, Stat *stat, Error *err)
 int
 sflush(SOCKET fd, uint16_t oldtag)
 {
-  uint32_t total_size = 7 + 2; /* header + tag */
-  unsigned char msg[total_size];
+  const uint32_t total_size = 7 + 2; /* header + tag */
+  unsigned char msg[7 + 2];
   int offset;
   Header hdr = { total_size, Tflush, 0 };
   int nbytes;
@@ -361,7 +408,7 @@ rflush(SOCKET fd)
 
   nbytes = recv(fd, (char *)msg + 4, size - 4, 0);
   if(nbytes != size - 4) {
-    perror("incomplete message received");
+    perror("rflush: incomplete message received");
     return -1;
   }
 
@@ -435,7 +482,7 @@ rwalk(SOCKET fd, Qid *qids, Error *err)
 
   nbytes = recv(fd, (char *)msg + 4, size - 4, 0);
   if(nbytes != size - 4) {
-    perror("incomplete message received");
+    perror("rwalk: incomplete message received");
     return -1;
   }
 
@@ -469,8 +516,8 @@ rwalk(SOCKET fd, Qid *qids, Error *err)
 int
 sclunk(SOCKET fd, uint32_t fid)
 {
-  uint32_t total_size = 7 + 4;
-  unsigned char msg[total_size];
+  const uint32_t total_size = 7 + 4;
+  unsigned char msg[7 + 4];
   int offset;
   Header hdr = { total_size, Tclunk, 0 };
   int nbytes;
@@ -503,7 +550,7 @@ rclunk(SOCKET fd, Error *err)
 
   nbytes = recv(fd, (char *)msg + 4, size - 4, 0);
   if(nbytes != size - 4) {
-    perror("incomplete message received");
+    perror("rclunk: incomplete message received");
     return -1;
   }
 
@@ -568,7 +615,7 @@ rattach(SOCKET fd, Qid *qid, Error *err)
   /* get rest of message */
   nbytes = recv(fd, (char *)msg + 4, size - 4, 0);
   if(nbytes != size - 4) {
-    perror("incomplete message received");
+    perror("rattach: incomplete message received");
     return -1;
   }
 
@@ -602,8 +649,8 @@ int
 sver(SOCKET fd)
 {
   /* "9P2000" is 6 bytes */
-  uint32_t total_size = 4 + 1 + 2 + 4 + 2 + 6;
-  unsigned char msg[total_size];
+  const uint32_t total_size = 4 + 1 + 2 + 4 + 2 + 6;
+  unsigned char msg[4 + 1 + 2 + 4 + 2 + 6];
   uint32_t msize = 8192;
   int offset;
   Header hdr = { total_size, Tversion, 0 };
@@ -649,7 +696,7 @@ int rver(SOCKET fd, Version *ver)
   /* get rest of message */
   nbytes = recv(fd, (char *)msg + 4, size - 4, 0);
   if (nbytes != size - 4) {
-    perror("incomplete message received");
+    perror("rver: incomplete message received");
     return -1;
   }
 
@@ -665,38 +712,30 @@ int rver(SOCKET fd, Version *ver)
   return 0;
 }
 
+SOCKET socketsetup(char *host, char *port);
+
+#if 0
 int
 main(int argc, char *argv[])
 {
-	struct addrinfo hints;
-	struct addrinfo *res;
-	SOCKET fd;
-	char *host;
-	char port[6];
-	int r;
-	Version ver;
-	Attach att;
-  Qid qid;
-  Error err;
-  char errstr[256];
-  Qid qids[MAXWELEM * QIDSZ];
-  int nwqid;
-  char *wname[MAXWELEM];
+  SOCKET fd;
+  char *host, port[6];
+  int r, nwqid, nstat;
   uint16_t nwname;
-  Stat stat;
   uint32_t iounit;
-  unsigned char data[8192];
   uint32_t count;
-  Stat stats[MAXSTATSZ * 32];
-  int nstat;
-
-#ifdef _WIN32
-	WSADATA wsa;
-	if(WSAStartup(MAKEWORD(2,2), &wsa) != 0){
-		fprintf(stderr, "wsastartup failed\n");
-		exit(1);
-	}
-#endif
+  char errstr[256];
+  char *wname[MAXWELEM];
+  unsigned char data[8192];
+  unsigned char *buf;
+  Version ver;
+  Attach att;
+  Qid qid;
+  Qid qids[MAXWELEM * QIDSZ];
+  Error err;
+  Stat stat;
+  Stat *stats;
+  int nbytes;
 
 	switch(argc){
 	case 2:
@@ -712,40 +751,7 @@ main(int argc, char *argv[])
 		exit(1);
 	}
 
-	memset(&hints, 0, sizeof hints);
-	hints.ai_family = AF_INET;
-	hints.ai_socktype = SOCK_STREAM;
-
-	r = getaddrinfo(host, port, &hints, &res);
-	if(r != 0){
-		fprintf(stderr, "getaddrinfo failed\n");
-#ifdef _WIN32
-		WSACleanup();
-#endif
-		exit(1);
-	}
-
-	fd = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
-	if(fd == INVALID_SOCKET){
-		fprintf(stderr, "socket failed\n");
-		freeaddrinfo(res);
-#ifdef _WIN32
-		WSACleanup();
-#endif
-		exit(1);
-	}
-
-	if(connect(fd, res->ai_addr, res->ai_addrlen) == SOCKET_ERROR){
-		fprintf(stderr, "connect failed\n");
-		closesocket(fd);
-		freeaddrinfo(res);
-#ifdef _WIN32
-		WSACleanup();
-#endif
-		exit(1);
-	}
-
-	freeaddrinfo(res);
+  fd = socketsetup(host, port);
 	fprintf(stderr, "connected to %s:%s\n", host, port);
 	if((r = sver(fd)) < 0) goto Exit;
   if((r = rver(fd, &ver)) < 0) goto Exit;
@@ -779,8 +785,9 @@ main(int argc, char *argv[])
   }
   printf("QID[ %u, %u, %llu ]\n", qid.type, qid.vers, qid.path);
 
-  nwname = 1;
+  nwname = 2;
   wname[0] = "lib";
+  wname[1] = "rob";
   if((r = swalk(fd, att.fid, 1, nwname, wname)) < 0) goto Exit;
   if((nwqid = rwalk(fd, qids, &err)) < 0) goto Exit;
   if(err.elen != 0) {
@@ -820,7 +827,7 @@ main(int argc, char *argv[])
   if(iounit == 0) iounit = 8192;
 
   puts("sending read");
-  if((r = sread(fd, 1, 0, 8192)) < 0) goto Exit;
+  if((r = sread(fd, 1, 1, 128)) < 0) goto Exit;
   puts("reading");
   if((r = rread(fd, data, &count, &err)) < 0) goto Exit;
   if(err.elen != 0) {
@@ -830,12 +837,27 @@ main(int argc, char *argv[])
   }
 
   data[count] = '\0';
+  printf("READ[ count: %u str: %s ]\n", count, data);
+
+  stats = malloc(1024);
   nstat = readdir(data, count, stats);
-  // printf("READ[ count: %u str: %s ]\n", count, data);
+   printf("READ[ count: %u str: %s ]\n", count, data);
   for(int i = 0; i < nstat; i++) {
     printf("Stat %d:\n", i);
     printstat(stats[i]);
   }
+  free(stats);
+
+
+  if((r = sread(fd, 1, 0, stat.length)) < 0) goto Exit;
+  buf = rreadall(fd, &count, &err);
+  if(err.elen != 0) {
+    fprintf(stderr, "Rerror: %s\n", err.ename);
+    r = -1;
+    goto Exit;
+  }
+  printf("READ[ count: %u str: %s ]\n", count, buf);
+  free(buf);
 
 Exit:
   r = sflush(fd, 0);
@@ -848,4 +870,58 @@ Exit:
 	WSACleanup();
 #endif
 	exit(r);
+}
+#endif
+
+SOCKET socketsetup(char *host, char *port)
+{
+  struct addrinfo hints;
+  struct addrinfo *res;
+  SOCKET fd;
+  int r;
+
+#ifdef _WIN32
+	WSADATA wsa;
+	if(WSAStartup(MAKEWORD(2,2), &wsa) != 0){
+		fprintf(stderr, "wsastartup failed\n");
+		exit(1);
+	}
+#endif
+
+	memset(&hints, 0, sizeof hints);
+	hints.ai_family = AF_INET;
+	hints.ai_socktype = SOCK_STREAM;
+
+	r = getaddrinfo(host, port, &hints, &res);
+	if(r != 0){
+		fprintf(stderr, "getaddrinfo failed\n");
+#ifdef _WIN32
+		WSACleanup();
+#endif
+		exit(1);
+	}
+
+	fd = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
+	if(fd == INVALID_SOCKET){
+		fprintf(stderr, "socket failed\n");
+		freeaddrinfo(res);
+#ifdef _WIN32
+		WSACleanup();
+#endif
+		exit(1);
+	}
+
+	if(connect(fd, res->ai_addr, res->ai_addrlen) == SOCKET_ERROR){
+		fprintf(stderr, "connect failed\n");
+		closesocket(fd);
+		freeaddrinfo(res);
+#ifdef _WIN32
+		WSACleanup();
+#endif
+		exit(1);
+	}
+
+	freeaddrinfo(res);
+
+  return fd;
 }
