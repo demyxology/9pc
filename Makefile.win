@@ -1,0 +1,29 @@
+# Makefile.win - For use with nmake on Windows (32-bit build)
+
+CC=cl.exe
+CFLAGS=/nologo /W4 /O2 /D_CRT_SECURE_NO_WARNINGS /D_UNICODE /DUNICODE
+WINFSP_INCLUDE="C:\Program Files (x86)\WinFSP\inc"
+WINFSP_LIB="C:\Program Files (x86)\WinFSP\lib"
+CFLAGS=$(CFLAGS) /I$(WINFSP_INCLUDE)
+# No /MACHINE flag - let the linker determine it from the object files
+LDFLAGS=/link /LIBPATH:$(WINFSP_LIB) winfsp-x86.lib ws2_32.lib
+
+TARGET=9pc.exe
+OBJS=9pc.obj util.obj passthrough.obj
+
+all: $(TARGET)
+
+$(TARGET): $(OBJS)
+	$(CC) $(OBJS) /Fe:$(TARGET) $(LDFLAGS)
+
+9pc.obj: 9pc.c dat.h fns.h
+	$(CC) $(CFLAGS) /c 9pc.c
+
+util.obj: util.c dat.h fns.h
+	$(CC) $(CFLAGS) /c util.c
+
+passthrough.obj: passthrough.c
+	$(CC) $(CFLAGS) /c passthrough.c
+
+clean:
+	del /F /Q $(TARGET) $(OBJS)
